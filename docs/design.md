@@ -415,7 +415,7 @@ func ExclusiveWrite(p string, r io.Reader, mode os.FileMode) error   // 不覆�
 | `apps.{role}` | object | 用 GitHub 时必填 | `app_id` / `installation_id` / `slug` / `credential_ref`；developer 与 delivery 必须是不同 App | 同 |
 | `ci.required_checks` | array | 用门禁时必填 | 每项 `{context, integration_id}`，context 唯一 | `ci.required_checks` |
 | `ci.workflow_path` | path | 用门禁时必填 | 必须在 `.github/workflows/` 下 | 同 |
-| `commands.*` | `{cwd, argv}` | 跑业务命令时必填 | argv 数组，禁止 shell 字符串；`cwd` 必须项目内 | 同 |
+| `commands.*` | `{cwd, argv}` | 跑业务命令时必填 | argv 数组，禁止 shell 字符串；**`cwd` 必填且必须是项目内相对路径**（拒绝空串、`/`/`\` 开头、UNC、盘符 `C:`、任一段 `..`，判定不依赖宿主平台语义） | 同 |
 | `attribution.required` | bool | 否 | 要求角色写操作携带 identity 并核验提交署名 | 同 |
 | `attribution.legacy_before` | 完整 SHA | 否 | 只豁免仍为 HEAD 祖先的启用前历史 | 同 |
 | `execution.strip_env` | string[] | 否 | 运行项目命令/测试时额外清除的环境变量 | 同 |
@@ -2004,6 +2004,7 @@ npm 包装层的 `run.js` 与 `ghpipe update` 是同一套保障的两个入口�
 | **测试不得绑定监听端口** | 开发与验收 agent 都跑在沙箱里，`httptest.NewServer`/`net.Listen` 会因 `bind: operation not permitted` 直接 panic；在沙箱外跑通过不代表可用 | HTTP 层测试用注入式假 `RoundTripper`（或 `httptest.NewRecorder` + 直接调用 handler）；CI 与本地默认都不需要网络或端口 |
 | **验证测试必须用 `-count=1`（或等价禁用缓存）** | Go 会缓存测试结果：一次沙箱外的成功会让沙箱内显示 `ok (cached)`，把真实失败掩盖掉 | `quality check --run-tests` 执行 `commands.test` 时，若命令是 go test 一律要求带 `-count=1`；文档与 Skill 的自检清单同样带该参数 |
 | **交接信息写在 Issue/PR 上，不依赖 agent 间消息** | 实践中出现过派发消息未送达子 agent 的情况（子 agent 只拿到环境、没有任务正文） | 任务范围、变更要求、验收标准一律落 GitHub（Issue 正文 + 评论）；派发独立 agent 时在首条指令里要求它先读 Issue 及评论，做到「消息丢了也能从账本恢复」 |
+| **平台差异只能由多平台 CI 判定，本地沙箱与交叉编译都不算** | 首次运行三平台矩阵就在 `windows-latest` 抓到一个本地与交叉编译都发现不了的缺陷（`filepath.IsAbs("/tmp")` 在 Windows 上为 false，导致 `commands.*.cwd` 可指向项目外） | `.github/workflows/ci.yml` 的 `test` job 覆盖 ubuntu/macos/windows；分支推送即触发（我们直接合并分支、不开 PR），合并前必须三平台全绿；本地沙箱只作为快速反馈 |
 
 补充一条实践结论（不改变设计，只是记录）：当执行 agent 的沙箱把 `.git` 挂成只读、且无网络时，它只能产出**工作区改动**；此时由调度者在核对产出后代理提交与推送，并在提交信息里注明产出者与代理原因。这与「提交必须由 Developer 完成」的默认约定并不冲突——约定的是**内容责任**，而不是磁盘权限。
 
@@ -2033,6 +2034,7 @@ npm 包装层的 `run.js` 与 `ghpipe update` 是同一套保障的两个入口�
 - Reviewer 的非阻断发现已登记为 **Issue #2**（bug）：Link 头按逗号切分会在 URL 含逗号时静默丢页；跨主机重定向被拒时的错误分类过于笼统。
 - **P1b-1 已合并**（`5e5c04c`，Issue #3）：`internal/gitx`（只读 git 查询，Runner 带 context）+ `internal/lifecycle`（纯阶段投影，`Plan` 返回每个对象的阶段）。同样是独立开发（两轮：初版 + 变更要求）→ 独立 Reviewer 固定 SHA 验收（26 处变异全部被测试捕获，APPROVE）→ 调度者合并清理。
 - **仓库自带 CI 已落地**：`.github/workflows/ci.yml` —— 三平台测试矩阵（ubuntu/macos/windows，`go vet` + `go test -count=1`）与六目标交叉编译矩阵。这就是「多平台编译与测试」的默认验证方式，本地沙箱只作为快速反馈。
+- **CI 首跑即抓到真缺陷**（Issue #4，已修复并合并 `76af541`）：`commands.*.cwd` 用 `filepath.IsAbs` 判断，Windows 上 `/tmp`、`\foo` 只是 rooted 而非 absolute，可通过校验并解析到项目外。修复方式：新增 `internal/project.IsProjectRelative`（跨平台判定，拒绝空串/绝对/`/`与`\` 开头/UNC/盘符/`..` 段），`cwd` 与 `ci.workflow_path` 复用；回归用例在 Linux 上同样能抓住该缺陷。平台结论由 CI run `34754753405` 提供（三平台测试全绿），独立 Reviewer 在同 SHA 验收通过。
 - 下一片 **P1b-2**：只读面命令——`status`（需要 `metadata` 事实收集 + `checks` 事实 + `policy` 门禁）、`doctor --offline`、`metadata`（只读）、`quality check`。
 
 ---
