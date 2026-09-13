@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -20,13 +21,18 @@ const ConfigFile = "config.json"
 // SchemaVersion is the only supported configuration schema version.
 const SchemaVersion = 1
 
+// workflowDir is the only directory allowed to hold ghpipe gate workflows.
+// Workflow paths are always compared with "/" separators so a config behaves
+// identically on every platform.
+const workflowDir = ".github/workflows"
+
 var (
-	nameRe     = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
-	repoRe     = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
-	versionRe  = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
-	commandRe  = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
-	shaRe      = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	credRefRe  = regexp.MustCompile(`^[A-Za-z0-9_./:-]{1,160}$`)
+	nameRe    = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	repoRe    = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	versionRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	commandRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	shaRe     = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	credRefRe = regexp.MustCompile(`^[A-Za-z0-9_./:-]{1,160}$`)
 )
 
 // Command is one registered native command. It is executed as an argv array -
@@ -190,10 +196,8 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("commands[%q].argv entries must be non-empty", name)
 			}
 		}
-		if cmd.Cwd != "" {
-			if filepath.IsAbs(cmd.Cwd) || filepath.Clean(cmd.Cwd) == ".." {
-				return fmt.Errorf("commands[%q].cwd must be project-relative", name)
-			}
+		if !IsProjectRelative(cmd.Cwd) {
+			return fmt.Errorf("commands[%q].cwd must be a non-empty project-relative path", name)
 		}
 	}
 	seen := map[string]bool{}
@@ -207,8 +211,9 @@ func (c *Config) Validate() error {
 		seen[check.Context] = true
 	}
 	if c.CI.WorkflowPath != "" {
-		if filepath.IsAbs(c.CI.WorkflowPath) || filepath.Dir(c.CI.WorkflowPath) != filepath.Join(".github", "workflows") {
-			return fmt.Errorf("ci.workflow_path must be a file under .github/workflows/")
+		workflow := slashPath(c.CI.WorkflowPath)
+		if !IsProjectRelative(c.CI.WorkflowPath) || path.Dir(workflow) != workflowDir || path.Base(workflow) == "." {
+			return fmt.Errorf("ci.workflow_path must be a file directly under %s/", workflowDir)
 		}
 	}
 	if c.Attribution.LegacyBefore != "" && !shaRe.MatchString(c.Attribution.LegacyBefore) {
