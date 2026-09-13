@@ -22,12 +22,14 @@ type Streams struct {
 // Run parses arguments and executes one command. It returns the process exit
 // code (see internal/result).
 func Run(args []string, streams Streams) int {
-	if streams.Out == nil {
-		streams.Out = os.Stdout
-	}
-	if streams.Err == nil {
-		streams.Err = os.Stderr
-	}
+	return RunWith(args, Deps{Streams: streams})
+}
+
+// RunWith executes one command with injectable seams. Tests use it to
+// substitute the transport, the credential source and the git runner; the
+// production entry point keeps using Run.
+func RunWith(args []string, deps Deps) int {
+	streams := deps.streams()
 	if len(args) == 0 {
 		printUsage(streams.Err)
 		return result.ExitUsageError
@@ -48,6 +50,12 @@ func Run(args []string, streams Streams) int {
 		return result.ExitOK
 	case "inspect":
 		return runInspect(global, streams)
+	case "status":
+		return runStatus(deps, global, rest[1:])
+	case "doctor":
+		return runDoctor(deps, global, rest[1:])
+	case "metadata":
+		return runMetadata(deps, global, rest[1:])
 	case "help", "--help", "-h":
 		printUsage(streams.Out)
 		return result.ExitOK
@@ -112,7 +120,9 @@ func usageFailure(streams Streams, rest []string, err error) int {
 	if streams.Err != nil {
 		fmt.Fprintf(streams.Err, "%s\n", env.String())
 	}
-	return env.ExitCode()
+	// A usage error is exit code 3 (docs/design.md 9.1): nothing was read and
+	// nothing was written, which is a different answer from "the task failed".
+	return result.ExitUsageError
 }
 
 func runInspect(global Global, streams Streams) int {
@@ -179,8 +189,14 @@ Usage:
 Commands:
   version                 print "ghpipe <semver>"
   inspect                 show the discovered project and its configuration
+  status                  read-only handoff state of one issue or pull request
+                          (--issue N | --pr N) --role developer|delivery [--offline]
+  doctor                  local preflight: --offline --for plan|develop|review
+  metadata                expected labels/milestones and their differences
+                          (--issue N | --pr N); preview only, no --apply
   help                    show this message
 
-This build is an early skeleton: only version and inspect are implemented.
+Every command prints one result envelope with --json and uses the exit codes
+0 (ok / ready), 1 (failed), 2 (unknown) and 3 (usage or precondition error).
 `, version.String())
 }
