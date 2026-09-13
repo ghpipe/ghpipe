@@ -738,30 +738,83 @@ ghpipe doctor --for handoff                           # 报告 isolation 与"哪
               "notes": ["同用户进程可读上述文件；本工具不做加密与生物识别（D25）"]}
 ```
 
-#### 6.8 宿主工具必须支持原生子 agent
+#### 6.8 宿主能力判定：主会话如何确定"能不能派发独立子 agent"
 
-主会话（Orchestrator）**必须**用宿主工具的**原生子 agent** 派发 Developer 与 Reviewer——即各自拥有独立上下文的独立 agent，而不是主会话在同一上下文里"扮演两个角色"。这是产品承诺（"开发与验收必须是两个独立 agent"）在工程上的实现方式，也是硬性前置条件。
+主会话（Orchestrator）**必须**用宿主工具的**原生子 agent** 派发 Developer 与 Reviewer——各自拥有独立上下文的独立 agent，而不是主会话在同一上下文里"扮演两个角色"。这条要求必须由**可执行判定**支撑，不能靠"听说支持/不支持"。
 
-兼容性判定（全部满足才算兼容）：
+##### 6.8.1 主流工具的能力形态（先看别人怎么做）
 
-| # | 能力 | 用途 |
+| 工具 | 官方能力 | 关键机制 |
 |---|---|---|
-| C1 | 能创建**独立上下文**的子 agent | 保证 Reviewer 不继承 Developer 的推理路径与先入结论 |
-| C2 | 能把**任务正文与角色边界**传给子 agent | 子 agent 必须拿到 Issue/范围/验收标准/禁止事项 |
-| C3 | 能**等待并收集**子 agent 的结果 | 主会话据此决定派发、返修、合并 |
-| C4 | 子 agent 拥有**独立主体身份**（凭据/密钥/会话与主会话不同） | 对应 CLI 侧的会话与能力隔离 |
-| C5 | 能**限制子 agent 的行为边界**（至少保证 Reviewer 不改代码） | 让"只验收不改动"可执行 |
+| Codex | **Subagent workflows 默认启用**（ChatGPT Work / Codex CLI / IDE）；本地 Codex 还支持用配置定义 custom agents | 主会话派发 → 子 agent 并行工作 → 结果汇集到一个回复；子 agent 的活动可见 |
+| Claude Code | 三层：**subagents**（同一会话内、独立上下文与工具集）、**background agents**（多个独立会话并行）、**cross-session messaging / agent teams**（会话间传递消息、团队编排） | 自定义 subagent 定义在 `.claude/agents/*.md`，靠 `description` 触发委派；可限制子 agent 的工具集（例如只读） |
+| OpenCode | **primary agents + subagents**：subagent 由主 agent 调用，或用户 `@` 显式点名；内置 General/Explore/Scout | 子 agent 有独立上下文与工具权限；可在配置里自定义 |
 
-不兼容时的行为（必须显式，不许静默降级）：
+结论：主流工具的能力不是"有/没有"的二元，而是**阶梯**。因此判定要回答的是"当前阶段需要哪一级、当前工具处在哪一级"。
 
-1. `ghpipe doctor --for handoff` 输出 `host_tool: {compatible: false, missing: [C1, ...]}` 并给出结论：**当前开发工具不支持独立子 agent，无法满足"开发与验收独立"**。
-2. 交付类命令（`task claim`、`pr create/edit/review/merge`、`publish`、`release`、`cleanup`）**拒绝执行**并说明原因；只读命令（`status`/`inspect`/`doctor`/`metadata` 只读）仍然可用。
-3. 明确建议**更换开发工具**，而不是让主会话亲自开发或亲自验收——那会破坏本产品最核心的承诺。
-4. 记录一条 `host_tool_incompatible` 到 `execution log`，便于事后核对"这次交付为什么没有独立验收"。
+##### 6.8.2 能力阶梯与最低要求
 
-边界说明：这是**宿主能力要求**，CLI 只能检查（主体是否不同、同一主体是否既开发又验收、`doctor` 报告），不能强制宿主真的创建了独立上下文。Skill 必须把这条检查放在交付流程的第一步。
+| 级别 | 形态 | 能否满足"独立验收" |
+|---|---|---|
+| L0 | 无委派能力（只有一个上下文） | 否 |
+| L1 | 同会话内子 agent（独立上下文、返回结果） | **可以**，需通过 §6.8.3 的三项属性验证 |
+| L2 | 独立会话/进程（如 background agents、独立 CLI 进程） | 可以（评测：结果收集可能要走文件/账本） |
+| L3 | 会话间消息 / 团队编排（可监督多个会话） | 可以，且更适合连续编排 |
 
-**兼容性探针（换工具或首次接入时先跑）**：让主会话派发两个子 agent，A 拿令牌 `TOKEN_A`、B 拿令牌 `TOKEN_B`（互不可见），要求各自回报 `TASK_OK: <自己拿到的令牌>`。全部满足才算兼容：① 两个子 agent 都回报了正确令牌（任务投递可用）；② A 报不出 `TOKEN_B`、B 报不出 `TOKEN_A`（上下文确实独立）；③ 主会话能收到两份结果（可等待与收集）。任何一项缺失即判不兼容——本设计的自举过程中，就有开发工具在这一步失败：子 agent 收不到任务正文、自行派生下级 agent、甚至改动了分支。
+交付类操作的最低要求是 **L1 且通过三项属性**：
+
+| 属性 | 含义 | 不满足时的后果 |
+|---|---|---|
+| A1 任务投递 | 子 agent 能收到任务正文与角色边界 | 子 agent 只能自己猜任务——这正是本仓库自举时踩到的坑 |
+| A2 上下文独立 | 子 agent 看不到父会话内容，子 agent 之间互不可见 | "独立验收"名存实亡（等于自审自过） |
+| A3 结果可收集 | 主会话能等待并拿到结果 | 无法判定通过/返修，流程无法继续 |
+
+另有两条**加分项**（不满足不阻断，但要在账本里标注）：A4 子 agent 有独立主体身份（对应 CLI 会话隔离）；A5 能限制子 agent 的工具集（例如 Reviewer 禁写）。
+
+##### 6.8.3 判定方法：声明 + 探针 + 证据
+
+**第一步 声明**（先验，不作证据）：`ghpipe doctor --for handoff` 读取宿主工具的自报能力（配置项 `host_tool: {name, version, subagents: true|false, agent_definitions: path?}`），只用来选择探针的派发方式，不用来下结论。
+
+**第二步 探针**（唯一证据）。主会话生成三个随机 nonce：`N_A`、`N_B`、`N_X`，只把 `N_A` 给 A、`N_B` 给 B，`N_X` 谁也不给；要求两个子 agent 各回报一行 `PROBE <自己的 nonce>`，并额外回答"你在自己的上下文里还能看到哪些 nonce"。判据：
+
+1. A 回报 `N_A`、B 回报 `N_B` → A1 成立；
+2. A 报不出 `N_B`/`N_X`、B 报不出 `N_A`/`N_X` → A2 成立；
+3. 主会话在超时内收到两份结果 → A3 成立。
+
+三者全过才判 `host_tool: compatible (level=L1|L2|L3)`。
+
+**第三步 失败分类**（把"失败"拆成可处置的类别，而不是笼统的"不支持"）：
+
+| 分类 | 现象 | 处置 |
+|---|---|---|
+| `no_dispatch` | 工具根本没有派发能力 | 判 L0；按 §6.8.4 走降级阶梯 |
+| `no_task_delivery` | 子 agent 起来了，但没拿到任务（本仓库自举时实测到的情况） | 换派发方式：①把任务写进子 agent 会读的文件/Issue（推荐，见 §6.8.5）；②改用工具自己的 agent 定义（如自定义 subagent 文件、`@` 点名）；③显式打开"继承父上下文"的派发选项 |
+| `shared_context` | 子 agent 能看到父会话或彼此的内容 | 不满足 A2：只能用于辅助工作，**不得用于验收**；换 L2/L3 或用工具的分隔选项 |
+| `no_collect` | 只能后台跑、父会话拿不到结果 | 结果走文件/账本回收（每次都留下证据），并在状态里标注 `collection: via_ledger` |
+| `restricted_absent` | 无法限制 Reviewer 的写权限（A5 不满足） | CLI 侧补偿（Reviewer 会话本身没有 `commit`/`push` 能力），并在账本标注 |
+
+**第四步 记录**：探针结果写 `.ghpipe/state/host-probe.json`（`tool`、`version`、`level`、`A1..A5`、`failures[]`、`nonce_hashes`、`observed_at`），并在当前 Issue/PR 留一条摘要评论作为账本证据。`doctor --for handoff` 的状态机：无记录 → `host_tool: unprobed`（交付类命令拒绝执行）；记录存在且 A1–A3 全过 → `compatible`；存在分类失败 → `incompatible` + 分类原因。
+
+##### 6.8.4 降级阶梯（每一级都要用户显式批准并留痕）
+
+| 级别 | 形态 | 独立性标注 | 允许的用途 |
+|---|---|---|---|
+| 默认 | 原生子 agent（L1–L3） | `native_subagent` | 开发与验收 |
+| 降级 1 | 独立会话/进程（background agent、独立 CLI 进程） | `separate_session` | 开发与验收（结果走文件/账本收集） |
+| 降级 2 | 人工派发（用户自己开两个会话、两把凭据） | `manual_dispatch` | 开发与验收 |
+| **禁止** | 主会话自己开发、自己验收 | `self_review` | **任何情况下都不允许** |
+
+降级必须写进 `execution log` 与该 Issue/PR 的交接评论；`doctor` 在降级模式下显式打印 `independence: separate_session|manual_dispatch`，不把它说成原生子 agent。
+
+##### 6.8.5 派发通道：任务正文放哪里
+
+主流工具的委派都靠"把指令交给子 agent"完成，而**不同工具的投递方式不同**：Codex 靠派发时的任务文本（可用自定义 agent 指令），Claude Code 靠 subagent 定义文件 + `description` 触发，OpenCode 靠配置 + `@` 点名。因此 ghpipe 的 Skill 按下面顺序选通道：
+
+1. **工具原生派发**（首选）：用宿主提供的方式把任务交给子 agent；
+2. **任务文件通道**（兜底）：把任务正文写到工作区的约定文件（本项目自举阶段用 `docs/TASK.md`），派发指令里要求子 agent **先读该文件**；文件内容与 Issue 正文一致，来源仍是账本；
+3. **账本通道**：任务范围、变更要求、验收标准始终在 Issue/PR 留一份（子 agent 若能联网就自行读取；不能联网时由调度者把它落到工作区文件）。
+
+本项目自举阶段实测：某工具的派发消息没有进入子 agent 上下文（子 agent 明确回报"没有任务正文"），改用任务文件通道后子 agent 即可正常开工——这就是"失败分类 + 通道选择"要解决的问题，而不是判"工具不支持"。
 
 ---
 
