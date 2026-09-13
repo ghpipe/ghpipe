@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,146 @@ func TestPaginateContinuesAfterAShortPage(t *testing.T) {
 	}
 	if requests := transport.calls(); requests != 2 {
 		t.Errorf("transport saw %d requests, want 2: a short page is not proof of the end", requests)
+	}
+}
+
+// Regression: a Link header is an RFC 8288 link-value list, so a comma inside
+// the "<...>" URI - a search query for instance - does not separate entries.
+// Splitting on every bare comma cut the next link in half, which left the walk
+// with no rel="next" and returned the first page as a complete result.
+func TestPaginateFollowsALinkWhoseQueryContainsAComma(t *testing.T) {
+	next := testBaseURL + "/search/issues?q=label:a,b&page=2&per_page=100"
+	client, transport := newTestClient(t, servedBy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "", "1":
+			w.Header().Set("Link", fmt.Sprintf(
+				`<%s>; rel="next"; title="page,two", <%s>; rel="last"`, next, next))
+			_, _ = io.WriteString(w, `[{"number":1},{"number":2},{"number":3},{"number":4}]`)
+		case "2":
+			if !strings.Contains(r.URL.RawQuery, "a,b") {
+				t.Errorf("page 2 lost the comma that belongs to the query: %q", r.URL.RawQuery)
+			}
+			_, _ = io.WriteString(w, `[{"number":5}]`)
+		default:
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	})))
+
+	var got []issue
+	if err := client.Paginate(context.Background(), "/search/issues?q=label:a,b", &got, PaginateOptions{}); err != nil {
+		t.Fatalf("Paginate: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("collected %d issues, want 5: %+v", len(got), got)
+	}
+	if requests := transport.calls(); requests != 2 {
+		t.Fatalf("transport saw %d requests, want 2: a comma in the query must not end the walk", requests)
+	}
+}
+
+// The parser behind the walk: every shape a Link header is allowed to take,
+// including the ones the old comma split got wrong.
+func TestNextPageLinkParsesLinkValueLists(t *testing.T) {
+	const (
+		plain     = "https://api.github.com/issues?page=2&per_page=100"
+		withComma = "https://api.github.com/search/issues?q=label:a,b&page=2&per_page=100"
+	)
+	header := func(values ...string) http.Header {
+		h := make(http.Header)
+		for _, value := range values {
+			h.Add("Link", value)
+		}
+		return h
+	}
+
+	cases := []struct {
+		name   string
+		header http.Header
+		want   string
+	}{
+		{"no header", header(), ""},
+		{"empty Link header", header(""), ""},
+		{
+			"prev then next",
+			header(`<https://api.github.com/issues?page=1>; rel="prev", <` + plain + `>; rel="next"`),
+			plain,
+		},
+		{
+			"only next",
+			header(`<` + plain + `>; rel="next"`),
+			plain,
+		},
+		{
+			"prev and last, no next",
+			header(`<https://api.github.com/issues?page=1>; rel="prev", <https://api.github.com/issues?page=9>; rel="last"`),
+			"",
+		},
+		{
+			"comma inside the query string",
+			header(`<` + withComma + `>; rel="next", <https://api.github.com/search/issues?q=label:a,b&page=9>; rel="last"`),
+			withComma,
+		},
+		{
+			"comma inside a quoted parameter before rel",
+			header(`<` + plain + `>; title="a,b"; rel="next"`),
+			plain,
+		},
+		{
+			"comma inside a quoted parameter after rel",
+			header(`<` + plain + `>; rel="next"; title="a,b"`),
+			plain,
+		},
+		{
+			"semicolon inside a quoted parameter",
+			header(`<` + plain + `>; title="a;b"; rel="next"`),
+			plain,
+		},
+		{
+			"escaped quote inside a quoted parameter",
+			header(`<` + plain + `>; title="a\",b"; rel="next"`),
+			plain,
+		},
+		{
+			"unquoted rel parameter",
+			header(`<` + plain + `>; rel=next`),
+			plain,
+		},
+		{
+			"rel parameter name in another case",
+			header(`<` + plain + `>; REL="next"`),
+			plain,
+		},
+		{
+			"space separated relation types",
+			header(`<` + plain + `>; rel="prev next"`),
+			plain,
+		},
+		{
+			"relation type that merely starts with next",
+			header(`<` + plain + `>; rel="next-page"`),
+			"",
+		},
+		{
+			"next in the second Link header",
+			header(
+				`<https://api.github.com/issues?page=9>; rel="last"`,
+				`<`+plain+`>; rel="next"`,
+			),
+			plain,
+		},
+		{
+			"first next wins",
+			header(`<` + plain + `>; rel="next", <https://api.github.com/issues?page=3>; rel="next"`),
+			plain,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextPageLink(tc.header); got != tc.want {
+				t.Errorf("nextPageLink(%v) = %q, want %q", tc.header, got, tc.want)
+			}
+		})
 	}
 }
 

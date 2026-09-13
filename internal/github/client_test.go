@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -301,6 +302,10 @@ func TestTransportErrorsAreClassifiedByType(t *testing.T) {
 		{"access_denied", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.EACCES}, KindAccessDenied},
 		{"tls", x509.UnknownAuthorityError{}, KindTLS},
 		{"timeout", &url.Error{Op: "Get", URL: "https://api.github.com", Err: context.DeadlineExceeded}, KindTimeout},
+		// net/http wraps a CheckRedirect failure in a *url.Error, which is the
+		// shape the real redirect path produces.
+		{"redirect to another host", &url.Error{Op: "Get", URL: "https://api.github.com", Err: ErrRedirectToAnotherHost}, KindRedirect},
+		{"too many redirects", &url.Error{Op: "Get", URL: "https://api.github.com", Err: ErrTooManyRedirects}, KindRedirect},
 		{"unknown", fmt.Errorf("something else"), KindUnknown},
 	}
 
@@ -364,6 +369,56 @@ func TestCrossHostPaginationLinkIsRefused(t *testing.T) {
 	}
 	if got := transport.calls(); got != 0 {
 		t.Fatalf("the request reached the transport %d time(s), want 0", got)
+	}
+	assertRedacted(t, err)
+}
+
+// A redirect answered by the API host must not become a second request: the
+// credential was not issued for the host in the Location header. The refusal is
+// classified as a redirect, not as an unidentifiable transport failure.
+func TestRedirectToAnotherHostIsRefusedAndClassified(t *testing.T) {
+	var authorized []string
+	client, transport := newTestClient(t, servedBy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorized = append(authorized, r.Header.Get("Authorization"))
+		w.Header().Set("Location", "https://elsewhere.example/repos/ghpipe/ghpipe")
+		w.WriteHeader(http.StatusFound)
+	})))
+
+	err := client.Get(context.Background(), "/repos/ghpipe/ghpipe", nil)
+	if kind, ok := KindOf(err); !ok || kind != KindRedirect {
+		t.Fatalf("kind = %q (typed=%v), want %q; err = %v", kind, ok, KindRedirect, err)
+	}
+	if !errors.Is(err, ErrRedirectToAnotherHost) {
+		t.Errorf("err = %v, want it to wrap %v", err, ErrRedirectToAnotherHost)
+	}
+	// The call count is the proof that the Authorization header was never
+	// replayed to the host named by the redirect.
+	if got := transport.calls(); got != 1 {
+		t.Fatalf("the transport saw %d requests, want 1: the credential must not be replayed", got)
+	}
+	if want := DefaultTokenScheme + " " + testToken; len(authorized) != 1 || authorized[0] != want {
+		t.Fatalf("the API host received Authorization %q, want exactly one %q", authorized, want)
+	}
+	assertRedacted(t, err)
+}
+
+// A redirect chain that never settles is refused for the same reason: the walk
+// is bounded, and the bound is reported as a redirect failure.
+func TestTooManyRedirectsIsClassified(t *testing.T) {
+	client, transport := newTestClient(t, servedBy(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", testBaseURL+"/loop")
+		w.WriteHeader(http.StatusFound)
+	})))
+
+	err := client.Get(context.Background(), "/loop", nil)
+	if kind, ok := KindOf(err); !ok || kind != KindRedirect {
+		t.Fatalf("kind = %q (typed=%v), want %q; err = %v", kind, ok, KindRedirect, err)
+	}
+	if !errors.Is(err, ErrTooManyRedirects) {
+		t.Errorf("err = %v, want it to wrap %v", err, ErrTooManyRedirects)
+	}
+	if got := transport.calls(); got != maxRedirects {
+		t.Errorf("the transport saw %d requests, want %d: the chain stops at the limit", got, maxRedirects)
 	}
 	assertRedacted(t, err)
 }

@@ -130,24 +130,138 @@ func firstPagePath(path string) string {
 // that relation: "last" and "prev" are informational.
 func nextPageLink(header http.Header) string {
 	for _, value := range header.Values("Link") {
-		for _, part := range strings.Split(value, ",") {
-			fields := strings.Split(part, ";")
-			target := strings.TrimSpace(fields[0])
-			if !strings.HasPrefix(target, "<") || !strings.HasSuffix(target, ">") {
+		for _, raw := range splitOutside(value, ',') {
+			link, ok := parseLinkValue(raw)
+			if !ok {
 				continue
 			}
-			for _, field := range fields[1:] {
-				field = strings.TrimSpace(field)
-				if !strings.HasPrefix(field, "rel=") {
-					continue
-				}
-				if strings.Trim(strings.TrimPrefix(field, "rel="), `"`) == "next" {
-					return strings.Trim(target, "<>")
-				}
+			if link.hasRelation("next") {
+				return link.target
 			}
 		}
 	}
 	return ""
+}
+
+// linkValue is one entry of a Link header: the target URI plus its parameters.
+type linkValue struct {
+	target string
+	params map[string]string
+}
+
+// hasRelation reports whether rel carries the given relation type. RFC 8288
+// relation types are case-insensitive and space-separated, so a "prev next"
+// value is still a next link and "next-page" is not one.
+func (l linkValue) hasRelation(relation string) bool {
+	for _, value := range strings.Fields(l.params["rel"]) {
+		if strings.EqualFold(value, relation) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseLinkValue parses the RFC 8288 link-value grammar: a URI reference in
+// angle brackets followed by optional "; name=value" parameters, where a value
+// is a token or a quoted string. Anything without a "<...>" target is not a
+// link-value and is skipped.
+func parseLinkValue(raw string) (linkValue, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "<") {
+		return linkValue{}, false
+	}
+	end := strings.IndexByte(raw, '>')
+	if end < 0 {
+		return linkValue{}, false
+	}
+	link := linkValue{target: raw[1:end]}
+	for _, part := range splitOutside(raw[end+1:], ';') {
+		name, value, ok := splitParameter(part)
+		if !ok {
+			continue
+		}
+		if link.params == nil {
+			link.params = make(map[string]string, 2)
+		}
+		if _, duplicate := link.params[name]; !duplicate {
+			link.params[name] = value
+		}
+	}
+	return link, true
+}
+
+// splitParameter splits "name=value" at its first "=". Names are folded to
+// lower case here because link-header parameter names are case-insensitive.
+func splitParameter(raw string) (name, value string, ok bool) {
+	raw = strings.TrimSpace(raw)
+	eq := strings.IndexByte(raw, '=')
+	if eq <= 0 {
+		return "", "", false
+	}
+	name = strings.ToLower(strings.TrimSpace(raw[:eq]))
+	if name == "" {
+		return "", "", false
+	}
+	value = strings.TrimSpace(raw[eq+1:])
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		value = unquoteString(value)
+	}
+	return name, value, true
+}
+
+// unquoteString removes the surrounding quotes of an RFC 7230 quoted-string
+// and resolves its backslash escapes, so title="a,b" carries a literal comma.
+func unquoteString(value string) string {
+	inner := value[1 : len(value)-1]
+	if !strings.ContainsRune(inner, '\\') {
+		return inner
+	}
+	var b strings.Builder
+	b.Grow(len(inner))
+	for i := 0; i < len(inner); i++ {
+		if inner[i] == '\\' && i+1 < len(inner) {
+			i++
+		}
+		b.WriteByte(inner[i])
+	}
+	return b.String()
+}
+
+// splitOutside splits value on sep, ignoring separators that sit inside a
+// "<...>" URI reference or inside a quoted string. Splitting a Link header on
+// every bare comma is what used to tear a next link such as
+// "<https://api.github.com/issues?page=2&q=a,b>; rel=next" in half: the
+// truncated half carried no rel parameter, so the second page was dropped
+// while the walk still reported success.
+func splitOutside(value string, sep byte) []string {
+	parts := make([]string, 0, strings.Count(value, string(sep))+1)
+	var (
+		current strings.Builder
+		inURI   bool
+		inQuote bool
+		escaped bool
+	)
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		switch {
+		case escaped:
+			escaped = false
+		case inQuote && ch == '\\':
+			escaped = true
+		case ch == '"':
+			inQuote = !inQuote
+		case !inQuote && ch == '<':
+			inURI = true
+		case !inQuote && ch == '>':
+			inURI = false
+		case !inURI && !inQuote && ch == sep:
+			parts = append(parts, current.String())
+			current.Reset()
+			continue
+		}
+		current.WriteByte(ch)
+	}
+	return append(parts, current.String())
 }
 
 // splitPage separates the item array from the optional total_count. A bare

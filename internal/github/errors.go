@@ -17,6 +17,18 @@ import (
 // response bodies is what makes error handling drift between platforms.
 type ErrorKind string
 
+// Redirect sentinels. net/http reports a refused redirect as a *url.Error
+// wrapping whatever CheckRedirect returned, so the policy returns these two
+// values instead of anonymous errors: classifyTransport can then recognise the
+// refusal, and callers can match it with errors.Is.
+var (
+	// ErrRedirectToAnotherHost is returned instead of replaying the
+	// Authorization header to a host the credential was not issued for.
+	ErrRedirectToAnotherHost = errors.New("refusing to follow a redirect to another host")
+	// ErrTooManyRedirects is returned once the chain exceeds maxRedirects.
+	ErrTooManyRedirects = errors.New("stopped after too many redirects")
+)
+
 // Error kinds. The first group comes from the transport, the second from the
 // response, the last two from the contracts this package enforces.
 const (
@@ -28,7 +40,11 @@ const (
 	KindReset        ErrorKind = "reset"
 	KindUnreachable  ErrorKind = "unreachable"
 	KindAccessDenied ErrorKind = "access_denied"
-	KindUnknown      ErrorKind = "unknown"
+	// KindRedirect means the client refused to follow a redirect: either it
+	// pointed at another host or the chain ran past the limit. The status of
+	// the redirect itself is not reported, because the request never left.
+	KindRedirect ErrorKind = "redirect"
+	KindUnknown  ErrorKind = "unknown"
 
 	KindHTTP ErrorKind = "http"
 
@@ -237,6 +253,12 @@ func classifyTransport(err error, proxyHost string) ErrorKind {
 	if err == nil {
 		return KindUnknown
 	}
+	// A refused redirect is a local policy decision, so it is recognised
+	// before the network-shaped checks below: the sentinel arrives wrapped in
+	// a *url.Error, which would otherwise fall through to KindUnknown.
+	if errors.Is(err, ErrRedirectToAnotherHost) || errors.Is(err, ErrTooManyRedirects) {
+		return KindRedirect
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return KindTimeout
 	}
@@ -319,7 +341,23 @@ func transportDetail(kind ErrorKind) string {
 		return "the API host is unreachable"
 	case KindAccessDenied:
 		return "the process is not allowed to open the connection"
+	case KindRedirect:
+		return "the redirect was refused"
 	default:
 		return "the request failed before a response was received"
+	}
+}
+
+// redirectDetail says which redirect rule fired, so an operator can tell
+// "the token was not replayed" from "the chain is looping" without reading
+// unprintable error text.
+func redirectDetail(err error) string {
+	switch {
+	case errors.Is(err, ErrRedirectToAnotherHost):
+		return "the redirect points at another host and was refused to keep the credential off it"
+	case errors.Is(err, ErrTooManyRedirects):
+		return "the redirect chain ran past the redirect limit"
+	default:
+		return transportDetail(KindRedirect)
 	}
 }

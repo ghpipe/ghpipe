@@ -381,11 +381,15 @@ func (c *Client) transportError(method, path string, err error) *Error {
 		}
 	}
 	kind := classifyTransport(err, c.proxyHost)
+	detail := transportDetail(kind)
+	if kind == KindRedirect {
+		detail = redirectDetail(err)
+	}
 	return &Error{
 		Kind:     kind,
 		Method:   method,
 		Endpoint: RedactEndpoint(path),
-		Detail:   transportDetail(kind),
+		Detail:   detail,
 		cause:    err,
 	}
 }
@@ -433,10 +437,10 @@ func (c *Client) hardenRedirects() {
 	}
 	c.http.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= maxRedirects {
-			return errors.New("stopped after too many redirects")
+			return ErrTooManyRedirects
 		}
 		if len(via) > 0 && !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
-			return errors.New("refusing to follow a redirect to another host")
+			return ErrRedirectToAnotherHost
 		}
 		return nil
 	}
