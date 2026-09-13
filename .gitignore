@@ -7,8 +7,7 @@ node_modules/
 # Local tooling
 .local/
 
-# Sub-agent task brief and local tool state (never versioned)
-/docs/TASK.md
+# Local tool state (never versioned). Tasks live in GitHub Issues, not in files.
 /.ghpipe/
 
 # OS metadata
