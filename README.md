@@ -7,6 +7,7 @@ ghpipe 是用 Go 重写的 aipipe：一个静态编译的单二进制 CLI，配�
 - **产品方案（先读这个）**：[docs/product.md](docs/product.md) —— 能干什么、业务流程怎么走、人需要做什么
 - 技术设计：[docs/design.md](docs/design.md) —— 模块划分、配置、命令面、授权与分发
 - 待确认决策：[docs/design.md §17](docs/design.md#17-待确认决策清单)
+- 开发交接（换工具后从这里开始）：[docs/handoff.md](docs/handoff.md)
 
 ## 它能干什么
 
