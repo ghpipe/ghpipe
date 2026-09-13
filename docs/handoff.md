@@ -68,6 +68,7 @@
 
 - 产品与流程：[product.md](product.md)
 - 技术设计：[design.md](design.md)（模块划分、配置、命令面、授权、跨平台、自动化、决策清单 §17、缺口清单 §18）
+- 第一次自举的复盘与行动清单：[retro-selfhosting.md](retro-selfhosting.md)
 - 当前任务规格：Issue #7（P1b-2 只读面）、Issue #5（P1b-1 follow-up）
 
 ## 5. 接手后的第一批动作

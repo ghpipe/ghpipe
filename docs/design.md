@@ -2082,6 +2082,8 @@ npm 包装层的 `run.js` 与 `ghpipe update` 是同一套保障的两个入口�
 | **测试不得绑定监听端口** | 开发与验收 agent 都跑在沙箱里，`httptest.NewServer`/`net.Listen` 会因 `bind: operation not permitted` 直接 panic；在沙箱外跑通过不代表可用 | HTTP 层测试用注入式假 `RoundTripper`（或 `httptest.NewRecorder` + 直接调用 handler）；CI 与本地默认都不需要网络或端口 |
 | **验证测试必须用 `-count=1`（或等价禁用缓存）** | Go 会缓存测试结果：一次沙箱外的成功会让沙箱内显示 `ok (cached)`，把真实失败掩盖掉 | `quality check --run-tests` 执行 `commands.test` 时，若命令是 go test 一律要求带 `-count=1`；文档与 Skill 的自检清单同样带该参数 |
 | **交接信息写在 Issue/PR 上，不依赖 agent 间消息** | 实践中出现过派发消息未送达子 agent 的情况（子 agent 只拿到环境、没有任务正文） | 任务范围、变更要求、验收标准一律落 GitHub（Issue 正文 + 评论），任务正文是对子 agent 的**权威来源**；派发指令里要求子 agent 先读 Issue 及评论，做到「消息丢了也能从账本恢复」。这是对原生子 agent 派发（§6.8）的加固，不是替代 |
+| **调度者负责把任务正文物化到工作区** | 子 agent 的沙箱常无网络（`gh`/`api.github.com` 不可达），"让子 agent 自己读 Issue"并不总是可行 | 账本仍是权威来源；派发时由调度者在工作区生成任务简报（`docs/TASK.md`，内容与 Issue 正文一致）并要求子 agent 先读它；简报随任务结束删除，不进版本历史 |
+| **派发前先落盘自己的改动** | 继承上下文的子 agent 可能切换/新建分支，导致调度者尚未推送的提交被临时分支挟持（本仓库自举时差点发生，安全校验拦下后已 cherry-pick 回 main） | 调度者在派发任何子 agent 之前，必须先把工作区改动提交并推送；派发指令里明确禁止子 agent 切换或删除分支 |
 | **平台差异只能由多平台 CI 判定，本地沙箱与交叉编译都不算** | 首次运行三平台矩阵就在 `windows-latest` 抓到一个本地与交叉编译都发现不了的缺陷（`filepath.IsAbs("/tmp")` 在 Windows 上为 false，导致 `commands.*.cwd` 可指向项目外） | `.github/workflows/ci.yml` 的 `test` job 覆盖 ubuntu/macos/windows；分支推送即触发（我们直接合并分支、不开 PR），合并前必须三平台全绿；本地沙箱只作为快速反馈 |
 
 补充一条实践结论（不改变设计，只是记录）：当执行 agent 的沙箱把 `.git` 挂成只读、且无网络时，它只能产出**工作区改动**；此时由调度者在核对产出后代理提交与推送，并在提交信息里注明产出者与代理原因。这与「提交必须由 Developer 完成」的默认约定并不冲突——约定的是**内容责任**，而不是磁盘权限。
@@ -2291,3 +2293,5 @@ npm 包装层的 `run.js` 与 `ghpipe update` 是同一套保障的两个入口�
 | G44 | 测试缓存掩盖失败 | 一次沙箱外的成功会让沙箱内显示 `ok (cached)`，把真实失败藏起来 | 已定规则：验证测试必须 `-count=1`；`quality check --run-tests` 对 go test 强制该参数（§14.4） |
 | G45 | 依赖 agent 间消息传递任务范围 | 实践中出现派发消息未送达、子 agent 无任务正文的情况 | 已定规则：范围/变更要求/验收标准一律落 Issue 或 PR，派发时要求先读 Issue 及评论（§14.4） |
 | G46 | 没有把"宿主工具必须支持原生子 agent"写成前置条件 | 工具链不支持时可能退化成"主会话亲自开发/亲自验收"，直接破坏产品核心承诺 | 已补 §6.8：五项能力清单（独立上下文、可传任务、可收结果、独立主体、可限边界）+ 不兼容时的行为（`doctor` 报 `host_tool` 不兼容、交付类命令拒绝执行、只读命令保留、建议更换开发工具、记入 `execution log`） |
+| G47 | 早期把"派发消息没送达"误判为"工具不支持原生子 agent" | 一次通道故障被上升为产品级结论，写进文档并建议用户换工具 | 已改：§6.8 重写为能力阶梯 + 三 nonce 探针 + 五类失败分类 + 派发通道优先级；复盘见 [retro-selfhosting.md](retro-selfhosting.md)。纪律：设计文档必须区分「已实测 / 推断 / 未验证」，结论必须附探针证据 |
+| G48 | 宿主能力探针目前靠人工执行 | 每次换工具或升级工具都要人工跑，容易漏 | 待实现：`ghpipe doctor --for handoff --probe-host`（自动三 nonce 探针 → 写 `.ghpipe/state/host-probe.json` → 输出级别与失败分类） |
