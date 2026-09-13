@@ -1799,8 +1799,8 @@ ghpipe init resources --reviewed-digest DIGEST --apply
 
 | 任务 | 内容 |
 |---|---|
-| `test` | 三平台矩阵：`ubuntu-latest` / `macos-latest` / `windows-latest` 各跑 `go vet ./...` 与 `go test ./...`；`-race` 只在 Linux 与 macOS 跑（Windows 上 CGO 限制） |
-| `build` | 交叉编译矩阵冒烟：`CGO_ENABLED=0` 覆盖 darwin/linux/windows × amd64/arm64（32 位目标单独 job，允许失败不阻断） |
+| `test` | 三平台矩阵：`ubuntu-latest` / `macos-latest` / `windows-latest` 各跑 `go vet ./...` 与 `go test -count=1 ./...`（已落地为 `.github/workflows/ci.yml`）；`-race` 只在 Linux 与 macOS 跑（Windows 上 CGO 限制） |
+| `build` | 交叉编译矩阵：`CGO_ENABLED=0` 覆盖 darwin/linux/windows × amd64/arm64（同一 workflow 内的 `build` job；32 位目标将来单独 job，允许失败不阻断） |
 | `npm-wrapper` | 用本地假 Release 起 `httptest`，跑 `npm pack` + 安装 + `ghpipe --version` 校验 |
 | `resource-digest` | 校验 `resources/` 与 `manifest` 生成逻辑一致，防止内嵌资源与文档漂移 |
 | `platform` | 平台专属用例：Windows 上的锁/原子替换/拷贝回退/路径策略（UNC、设备命名空间、保留设备名）、macOS/Linux 上的 0600 校验与符号链接、CRLF 工作区下的资源哈希一致性、`ExclusiveWrite` 的不覆盖与整文件可见性 |
@@ -2031,7 +2031,9 @@ npm 包装层的 `run.js` 与 `ghpipe update` 是同一套保障的两个入口�
 - **P0 骨架已合并**（`97b0bcc`）：`go.mod`、命令树与统一 `--json` 信封、退出码契约（0/1/2/3）、`internal/hostfs`（文件锁双实现、原子替换、CRLF 规范化、密钥保护检查）、`internal/project`（配置发现与校验）、`version` 与 `inspect` 两个命令；`go vet` / `go test` 通过，六目标交叉编译通过。
 - **P1a 已合并**（`4d97521`，Issue #1）：`internal/github` 的进程内传输、REST 分页契约、GraphQL 连接契约、错误分类与端点脱敏。流程按本设计执行：独立 Developer agent 实现（`f9a4696`）→ 变更要求（测试不得依赖监听端口）后修复（`d7b1813`）→ 另起独立 Reviewer agent 在固定 SHA 验收（变异测试 11 处注入缺陷全部被捕获，结论 APPROVE）→ 调度者 squash 合并并清理分支。
 - Reviewer 的非阻断发现已登记为 **Issue #2**（bug）：Link 头按逗号切分会在 URL 含逗号时静默丢页；跨主机重定向被拒时的错误分类过于笼统。
-- 下一片 **P1b**：基于该传输层实现只读面——`gitx` 检出信息与分支守卫（只读部分）、`lifecycle` 纯投影、`status`、`doctor --offline`、`metadata`（只读）、`quality check`。
+- **P1b-1 已合并**（`5e5c04c`，Issue #3）：`internal/gitx`（只读 git 查询，Runner 带 context）+ `internal/lifecycle`（纯阶段投影，`Plan` 返回每个对象的阶段）。同样是独立开发（两轮：初版 + 变更要求）→ 独立 Reviewer 固定 SHA 验收（26 处变异全部被测试捕获，APPROVE）→ 调度者合并清理。
+- **仓库自带 CI 已落地**：`.github/workflows/ci.yml` —— 三平台测试矩阵（ubuntu/macos/windows，`go vet` + `go test -count=1`）与六目标交叉编译矩阵。这就是「多平台编译与测试」的默认验证方式，本地沙箱只作为快速反馈。
+- 下一片 **P1b-2**：只读面命令——`status`（需要 `metadata` 事实收集 + `checks` 事实 + `policy` 门禁）、`doctor --offline`、`metadata`（只读）、`quality check`。
 
 ---
 
