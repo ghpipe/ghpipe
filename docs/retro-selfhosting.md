@@ -35,20 +35,21 @@
 ## 4. 已修正
 
 1. `design.md §6.8` 重写：能力阶梯 L0–L3（对齐 Codex「subagent workflows 默认启用 + 自定义 agent」、Claude Code「subagents / background agents / cross-session messaging」、OpenCode「primary agents + subagents」）；三项必须属性 A1 任务投递 / A2 上下文独立 / A3 结果可收集，两项加分 A4 独立主体 / A5 可限工具集。
-2. 判定方法：声明（先验，不作证据）→ **三 nonce 探针**（A 拿 `N_A`、B 拿 `N_B`、对照 `N_X` 谁都不给）→ 证据落 `.ghpipe/state/host-probe.json` + Issue 评论；`doctor` 状态机 `unprobed / compatible / incompatible`。
+2. 判定方法（**设计已写，尚未实现**）：声明（先验，不作证据）→ **三 nonce 探针**（A 拿 `N_A`、B 拿 `N_B`、对照 `N_X` 谁都不给；**必须先派 B 再派 A**，否则 A2 会假通过）→ 证据落 `.ghpipe/state/host-probe.json` + Issue 评论（**Issue 评论是权威，本地 JSON 只是缓存**）；`doctor` 状态机 `unprobed / compatible / incompatible` 与 `--probe-host` 见 G48，目前尚未落地。
 3. **失败分类与处置**：`no_dispatch` / `no_task_delivery` / `shared_context` / `no_collect` / `restricted_absent`，每类给出可执行补救（换通道、换形态、结果走账本、CLI 侧补偿）。
 4. 降级阶梯与留痕：原生子 agent → 独立会话/进程（`separate_session`）→ 人工派发（`manual_dispatch`）；**禁止 `self_review`**。
 5. 派发通道优先级：工具原生派发 → 任务文件（`docs/TASK.md`，子 agent 先读）→ 账本（Issue/PR 正文与评论）。
-6. `product.md`、`handoff.md` 删掉"本工具不兼容"的说法，改为"先探测、按结果处置"。
+6. `product.md`、`handoff.md` 删掉"本工具不兼容"的说法，改为"先探测、按结果处置"；`handoff.md` 标题与 `product.md` 小节标题去掉"换工具/硬性前置"的残留措辞。
 
 ## 5. 待验证（不要把推断当结论）
 
 | 项 | 状态 | 怎么验证 |
 |---|---|---|
-| A2 上下文独立 | **未完成** | 三 nonce 探针的阴性对照（A 不得报出 `N_B`/`N_X`）因并发线程上限（4）未跑完 |
+| A2 上下文独立 | **未完成（且当前可能不成立）** | 三 nonce 探针的阴性对照（A 不得报出 `N_B`/`N_X`）未跑完；注意本仓库"有效通道"是**继承父上下文**，按 §6.8.3 定义这属于 `shared_context` —— 在 A2 被证明之前，用该通道做**验收**是不合规的（评审已指出） |
 | A5 可限工具体 | 未测 | 是否能把 Reviewer 子 agent 的工具集限制为只读（Claude Code 有该能力；本工具待测） |
 | 任务文件通道的可移植性 | 部分验证 | 本工具下 `docs/TASK.md` 有效；其它工具应优先用其原生 agent 定义/点名方式 |
 | 子 agent 的网络访问 | 已知受限 | 子 agent 沙箱内无网络（`gh`/`api.github.com` 不可达）→ 调度者必须把 Issue 正文落到工作区文件，不能假设子 agent 能自己读 Issue |
+| 通道矩阵（单变量） | 未跑 | 必须逐格只改一个变量：`fork_turns:none` + 仅消息（已知失败）／`fork_turns:none` + 简报文件／继承上下文 + 简报文件；此前"一次改两个变量"的实测不算证据（评审指出） |
 
 ## 6. 下次的行动清单
 

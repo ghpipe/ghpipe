@@ -7,6 +7,10 @@ node_modules/
 # Local tooling
 .local/
 
+# Sub-agent task brief and local tool state (never versioned)
+/docs/TASK.md
+/.ghpipe/
+
 # OS metadata
 .DS_Store
 ._*

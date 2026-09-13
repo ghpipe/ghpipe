@@ -773,6 +773,10 @@ ghpipe doctor --for handoff                           # 报告 isolation 与"哪
 
 ##### 6.8.3 判定方法：声明 + 探针 + 证据
 
+> **落地状态：设计已定，尚未实现。** 目前探针靠人工执行；`doctor --for handoff` 的 `unprobed / compatible / incompatible` 状态机与 `.ghpipe/state/host-probe.json` 都还没实现（见 G48）。本节描述的是目标行为，不是现状；在实现之前，任何"独立上下文"的说法都必须标注为**未验证**。
+>
+> **探针顺序要求（否则会假通过）**：必须先派发 B（携带 `N_B`）并等它回报，再派发 A，同时要求 A 回答"你能否引用 Reviewer 那个令牌"。若 A、B 并行派发，A 的快照里可能根本没有 B 的 nonce，"A 报不出 `N_B`"就没有信息量，A2 会被空过（这是评审实测指出的漏洞）。
+
 **第一步 声明**（先验，不作证据）：`ghpipe doctor --for handoff` 读取宿主工具的自报能力（配置项 `host_tool: {name, version, subagents: true|false, agent_definitions: path?}`），只用来选择探针的派发方式，不用来下结论。
 
 **第二步 探针**（唯一证据）。主会话生成三个随机 nonce：`N_A`、`N_B`、`N_X`，只把 `N_A` 给 A、`N_B` 给 B，`N_X` 谁也不给；要求两个子 agent 各回报一行 `PROBE <自己的 nonce>`，并额外回答"你在自己的上下文里还能看到哪些 nonce"。判据：
@@ -788,7 +792,7 @@ ghpipe doctor --for handoff                           # 报告 isolation 与"哪
 | 分类 | 现象 | 处置 |
 |---|---|---|
 | `no_dispatch` | 工具根本没有派发能力 | 判 L0；按 §6.8.4 走降级阶梯 |
-| `no_task_delivery` | 子 agent 起来了，但没拿到任务（本仓库自举时实测到的情况） | 换派发方式：①把任务写进子 agent 会读的文件/Issue（推荐，见 §6.8.5）；②改用工具自己的 agent 定义（如自定义 subagent 文件、`@` 点名）；③显式打开"继承父上下文"的派发选项 |
+| `no_task_delivery` | 子 agent 起来了，但没拿到任务（本仓库自举时实测到的情况） | 换派发方式：①把任务写进子 agent 会读的文件/Issue（推荐，见 §6.8.5）；②改用工具自己的 agent 定义（如自定义 subagent 文件、`@` 点名）；③显式打开"继承父上下文"的派发选项——**注意：③ 可能等价于 `shared_context`，可用于开发，用于验收前必须先证明 A2 成立** |
 | `shared_context` | 子 agent 能看到父会话或彼此的内容 | 不满足 A2：只能用于辅助工作，**不得用于验收**；换 L2/L3 或用工具的分隔选项 |
 | `no_collect` | 只能后台跑、父会话拿不到结果 | 结果走文件/账本回收（每次都留下证据），并在状态里标注 `collection: via_ledger` |
 | `restricted_absent` | 无法限制 Reviewer 的写权限（A5 不满足） | CLI 侧补偿（Reviewer 会话本身没有 `commit`/`push` 能力），并在账本标注 |
@@ -796,6 +800,8 @@ ghpipe doctor --for handoff                           # 报告 isolation 与"哪
 **第四步 记录**：探针结果写 `.ghpipe/state/host-probe.json`（`tool`、`version`、`level`、`A1..A5`、`failures[]`、`nonce_hashes`、`observed_at`），并在当前 Issue/PR 留一条摘要评论作为账本证据。`doctor --for handoff` 的状态机：无记录 → `host_tool: unprobed`（交付类命令拒绝执行）；记录存在且 A1–A3 全过 → `compatible`；存在分类失败 → `incompatible` + 分类原因。
 
 ##### 6.8.4 降级阶梯（每一级都要用户显式批准并留痕）
+
+> **落地状态：设计已定，尚未实现**（同上）。在实现完成前，降级只能由人手动执行并在 Issue 评论留痕，不能声称 CLI 已强制。
 
 | 级别 | 形态 | 独立性标注 | 允许的用途 |
 |---|---|---|---|
@@ -1385,7 +1391,7 @@ ghpipe verify regression --pr <PR> [--base <SHA>] [--test <name>]
 循环（每一步都以 GitHub 事实为准，本地不存阶段；任何一步中断后都能从 `status` 重新进入）：
 
 1. **定位与领取**：`ghpipe task inspect` 先看本机绑定；`ghpipe status --issue N --role delivery --json` 读事实。无绑定才 `ghpipe task claim --developer-subject <uuid>`，一次只领一个；`ghpipe task next --service` 只读返回候选与排序建议，避免人工逐个翻 Issue。
-2. **派发开发**：用宿主工具的**原生子 agent** 派发 Developer（§6.8）——独立上下文、独立主体身份，通过子 agent 指令把 Issue、精确分支 `ghpipe/issue-N`、Developer 会话与主体密钥路径、验收标准与禁止事项交给它。宿主不支持原生子 agent 时按 §6.8 报不兼容并建议更换工具，**不得降级为主会话亲自开发**。
+2. **派发开发**：按 §6.8 的宿主能力判定选择派发通道，优先用**原生子 agent** 派发 Developer（独立上下文、独立主体身份），把 Issue、精确分支 `ghpipe/issue-N`、Developer 会话与主体密钥路径、验收标准与禁止事项交给它。无法原生派发时走 §6.8.4 的**降级阶梯**（独立会话/进程或人工派发，需用户批准并在账本留痕）；**任何情况下都不得降级为主会话亲自开发或亲自验收**。
 3. **等待交付**：以 `status` 的 `next_actions` 为唯一权威提示；`pending/pr_missing` = 等待开发交接，不是失败。
 4. **安排验收**：拿到固定 SHA 后，Owner 用 `ghpipe execution issue --work-role reviewer --issue N --auto-bind` 一条命令签发绑定该 PR/SHA 的 Reviewer 会话（自动解析 PR 与 head，不需要人工抄 SHA）。
 5. **独立验收与返修**：同样用原生子 agent 派发 Reviewer（**另一个**子 agent，不复用 Developer 的上下文），它提交绑定 SHA 的 Review；退回则回原 Developer 修复。**新 head 必须重新签发并重新验收，旧批准作废**；返修轮次默认上限 3，超限报告具体阻塞。
@@ -2292,6 +2298,6 @@ npm 包装层的 `run.js` 与 `ghpipe update` 是同一套保障的两个入口�
 | G43 | 测试依赖真实监听端口 | 在 agent 沙箱内 `bind` 被拒绝，测试直接 panic；在沙箱外通过会掩盖问题 | 已定规则：测试不得绑定端口，HTTP 层用注入式假 `RoundTripper`（§14.4） |
 | G44 | 测试缓存掩盖失败 | 一次沙箱外的成功会让沙箱内显示 `ok (cached)`，把真实失败藏起来 | 已定规则：验证测试必须 `-count=1`；`quality check --run-tests` 对 go test 强制该参数（§14.4） |
 | G45 | 依赖 agent 间消息传递任务范围 | 实践中出现派发消息未送达、子 agent 无任务正文的情况 | 已定规则：范围/变更要求/验收标准一律落 Issue 或 PR，派发时要求先读 Issue 及评论（§14.4） |
-| G46 | 没有把"宿主工具必须支持原生子 agent"写成前置条件 | 工具链不支持时可能退化成"主会话亲自开发/亲自验收"，直接破坏产品核心承诺 | 已补 §6.8：五项能力清单（独立上下文、可传任务、可收结果、独立主体、可限边界）+ 不兼容时的行为（`doctor` 报 `host_tool` 不兼容、交付类命令拒绝执行、只读命令保留、建议更换开发工具、记入 `execution log`） |
+| G46 | 早期没有"宿主能力怎么判"的设计 | 只有"支持/不支持"的二元判断，工具差异一大就无从下手 | 已补 §6.8：能力阶梯 L0–L3 + 三项必须属性（任务投递/上下文独立/结果可收集）+ 两项加分（独立主体/可限工具集）+ 三 nonce 探针 + 五类失败分类 + 降级阶梯（原生 → 独立会话 → 人工派发，禁止 `self_review`） |
 | G47 | 早期把"派发消息没送达"误判为"工具不支持原生子 agent" | 一次通道故障被上升为产品级结论，写进文档并建议用户换工具 | 已改：§6.8 重写为能力阶梯 + 三 nonce 探针 + 五类失败分类 + 派发通道优先级；复盘见 [retro-selfhosting.md](retro-selfhosting.md)。纪律：设计文档必须区分「已实测 / 推断 / 未验证」，结论必须附探针证据 |
 | G48 | 宿主能力探针目前靠人工执行 | 每次换工具或升级工具都要人工跑，容易漏 | 待实现：`ghpipe doctor --for handoff --probe-host`（自动三 nonce 探针 → 写 `.ghpipe/state/host-probe.json` → 输出级别与失败分类） |

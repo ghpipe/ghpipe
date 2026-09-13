@@ -89,7 +89,7 @@ review ──要求返修──▶ changes-requested ──Developer 修复─�
 | 任务取消 | 要求 Issue 与所有 PR 关闭且未合并，保留分支与提交，不当作完成 |
 | 门禁/规则不明 | 停下来报告，不用 admin/bypass 绕过 |
 
-## 对开发工具的要求（硬性前置）
+## 对开发工具的要求（能力探测与降级阶梯）
 
 ghpipe 最核心的承诺是「开发与验收必须是两个独立 agent」。主流的开发工具（Codex、Claude Code、OpenCode 等）都提供子 agent 能力，但**形态不同、投递方式不同**，所以 ghpipe 不靠"听说支持"来判定，而是**先探测、再据实选择通道**：
 
