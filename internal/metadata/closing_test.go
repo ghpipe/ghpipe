@@ -118,6 +118,83 @@ func TestScanClosingRefs(t *testing.T) {
 	}
 }
 
+// TestScanClosingRefsAcrossLines is the regression test for the defect in
+// issue #8: the separator between the keyword and the reference accepted only
+// horizontal whitespace, so "Closes\n#7" - a second claim on an issue written
+// across a line break - was invisible to the scan. A body carrying it could be
+// read as exactly one closing reference and associate with an issue, bypassing
+// the "exactly one closing reference" contract (docs/design.md 2.3).
+//
+// The scan must see the reference; the association still must not, because the
+// match does not occupy one line alone. Both halves are asserted here, along
+// with the positive case that a single-line reference stays standalone.
+func TestScanClosingRefsAcrossLines(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		refs []ClosingRef
+	}{
+		{
+			name: "keyword and number split by a newline",
+			body: "Closes\n#7",
+			refs: []ClosingRef{{Keyword: "closes", Number: 7, Line: 1}},
+		},
+		{
+			name: "keyword and number split by a carriage return and newline",
+			body: "Closes\r\n#7",
+			refs: []ClosingRef{{Keyword: "closes", Number: 7, Line: 1}},
+		},
+		{
+			name: "optional colon before the line break",
+			body: "Resolves:\r\n#12",
+			refs: []ClosingRef{{Keyword: "resolves", Number: 12, Line: 1}},
+		},
+		{
+			name: "repository qualified shorthand across the line break",
+			body: "Fixes\r\nother/repo#7",
+			refs: []ClosingRef{{
+				Keyword: "fixes", Number: 7, Owner: "other", Repo: "repo", Line: 1,
+			}},
+		},
+		{
+			name: "url form across the line break",
+			body: "Closes\nhttps://github.com/ghpipe/ghpipe/issues/7",
+			refs: []ClosingRef{{
+				Keyword: "closes", Number: 7, Host: "github.com", Owner: "ghpipe", Repo: "ghpipe",
+				URL: "https://github.com/ghpipe/ghpipe/issues/7", Line: 1,
+			}},
+		},
+		{
+			name: "the reference is the second line alone but not the keyword's line",
+			body: "Closes\n#7.",
+			refs: []ClosingRef{{Keyword: "closes", Number: 7, Line: 1}},
+		},
+		{
+			name: "a single line reference is still standalone",
+			body: "Closes #7",
+			refs: []ClosingRef{{Keyword: "closes", Number: 7, Line: 1, Standalone: true}},
+		},
+		{
+			name: "a list item on a single line is still standalone",
+			body: "- Closes #7",
+			refs: []ClosingRef{{Keyword: "closes", Number: 7, Line: 1, Standalone: true}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ScanClosingRefs(tc.body)
+			if len(got) != len(tc.refs) {
+				t.Fatalf("got %d references (%v), want %d (%v)", len(got), got, len(tc.refs), tc.refs)
+			}
+			for i := range got {
+				if got[i] != tc.refs[i] {
+					t.Errorf("reference %d = %+v, want %+v", i, got[i], tc.refs[i])
+				}
+			}
+		})
+	}
+}
+
 func TestClosingRefInRepository(t *testing.T) {
 	cases := []struct {
 		name string

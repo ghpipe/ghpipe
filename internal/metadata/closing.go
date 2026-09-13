@@ -25,8 +25,15 @@ import (
 // A bare URL is deliberately not a reference: "fixes https://ci.example/1"
 // is prose, not a claim on an issue, so the URL alternative requires an
 // /issues/N or /pull/N path.
+//
+// The separator between the keyword and the reference accepts any run of
+// whitespace, newlines included: "Closes\n#7" is a claim on #7 whether or not
+// the author kept it on one line. Line breaks must not hide a second claim,
+// because "exactly one closing reference" is the contract (docs/design.md
+// 2.3); whether such a match may associate is a separate question, settled by
+// standaloneAt.
 var closingRefRe = regexp.MustCompile(
-	`(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[ \t]*:?[ \t]+(?:` +
+	`(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[ \t\r\n]*:?[ \t\r\n]+(?:` +
 		`(https?://[^\s<>()\[\]"']+/(?:issues|pull)/([0-9]{1,10}))` +
 		`|` +
 		`(?:([A-Za-z0-9][A-Za-z0-9_.-]*)/([A-Za-z0-9][A-Za-z0-9_.-]*))?[ \t]*#[ \t]*([0-9]{1,10})` +
@@ -181,7 +188,15 @@ func parseNumber(raw string) int {
 // the line; trailing words are not, because "#7 fixes the flaky test" is a
 // sentence whose closing keyword GitHub would still honour. ghpipe refuses to
 // guess which of the two the author meant.
+//
+// The whole match must sit on one line. The separator accepts line breaks, so
+// the scan can see "Closes\n#7", but a reference split across lines does not
+// occupy either line alone and can never be the standalone claim the
+// association requires (docs/design.md 2.3).
 func standaloneAt(body string, start, end int) bool {
+	if strings.ContainsAny(body[start:end], "\r\n") {
+		return false
+	}
 	lineStart := strings.LastIndexByte(body[:start], '\n') + 1
 	lineEnd := len(body)
 	if i := strings.IndexByte(body[end:], '\n'); i >= 0 {

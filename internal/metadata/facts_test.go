@@ -356,6 +356,46 @@ func TestCollectRefusesCrossRepositoryClosingReference(t *testing.T) {
 	}
 }
 
+// TestCollectRefusesCrossLineSecondClosingReference is the contract-level
+// regression test for the defect in issue #8. The body carries the standalone
+// claim "Closes #7" and a second claim written across a line break,
+// "Closes\n#7". Before the fix the separator accepted only horizontal
+// whitespace, so the second reference was invisible: the body looked like
+// exactly one closing reference and the association rule of docs/design.md 2.3
+// ("出现第二个关闭引用即阻断") was bypassed. The second claim must refuse the
+// body, wherever it is written - an issue timeline or a pull request body.
+func TestCollectRefusesCrossLineSecondClosingReference(t *testing.T) {
+	const body = "Closes #7\n\nCloses\n#7"
+
+	owns, err := classifyClaim("ghpipe/ghpipe", 7, body)
+	if !errors.Is(err, ErrMultipleClosingReferences) {
+		t.Fatalf("classifyClaim(ghpipe/ghpipe, 7, %q) = (%v, %v), want ErrMultipleClosingReferences",
+			body, owns, err)
+	}
+
+	c := &collector{
+		issue: issueFixture(7, "OPEN", nil, ""),
+		timeline: []string{timelineFixture([]map[string]any{
+			prFixture{Number: 9, Body: body, HeadSHA: headSHA}.node(),
+		})},
+	}
+	if _, err := c.collect(t, Options{Issue: 7}); !errors.Is(err, ErrMultipleClosingReferences) {
+		t.Fatalf("Collect(Issue 7) with %q: err = %v, want ErrMultipleClosingReferences", body, err)
+	}
+
+	// The same grammar decides a pull request target, so the second call site
+	// must refuse the same body.
+	c = &collector{
+		issue: issueFixture(7, "OPEN", nil, ""),
+		pulls: map[string]string{
+			"/repos/ghpipe/ghpipe/pulls/99": `{"body":` + strconv.Quote(body) + `,"head":{"sha":"` + headSHA + `"}}`,
+		},
+	}
+	if _, err := c.collect(t, Options{PR: 99}); !errors.Is(err, ErrMultipleClosingReferences) {
+		t.Fatalf("Collect(PR 99) with %q: err = %v, want ErrMultipleClosingReferences", body, err)
+	}
+}
+
 // TestCollectRefusesURLClosingReferenceItCannotPlaceInThisRepository is the
 // regression test for the defect in a571dd5. The change request's minimal
 // reproduction was classifyClaim("ghpipe/ghpipe", 7, "Closes
