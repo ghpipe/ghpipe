@@ -830,6 +830,8 @@ ghpipe doctor --for handoff                           # 报告 isolation 与"哪
 
 **一个 agent 同一时刻只做一个任务；任务之间严格串行，禁止多任务并行。**
 
+这条规则在 ghpipe 里是**被产品强制的**，不只是对 agent 的纪律要求：`task claim` 会在存在任何其它 in-flight 任务时拒绝领取（§10.7），metadata 投影发现"同一仓库同时有多个活动任务"时输出 `parallel_tasks_detected` 并判 failed，`status` 把它作为 blocker 上报。人工绕开 CLI 直接开分支/PR 也会被账本检测出来。
+
 | 规则 | 要求 |
 |---|---|
 | 一次一个任务 | 当前任务未交付（开发）或未出结论（验收）之前，不派发下一个任务；不为同一个交付物同时开多个 Developer 或 Reviewer |
@@ -1372,7 +1374,11 @@ ghpipe verify regression --pr <PR> [--base <SHA>] [--test <name>]
 
 ### 10.8 task（单检出任务绑定）
 
-- `claim` 前置：Issue 打开、无 `ghpipe:blocked`、有 milestone、当前分支为默认分支或已签分支、默认分支工作区干净、该 Issue 无已合并 PR、全仓无其他活动 `ghpipe/issue-*` PR。
+- `claim` 前置（**单任务串行**）：Issue 打开、无 `ghpipe:blocked`、有 milestone、当前分支为默认分支或已签分支、默认分支工作区干净、该 Issue 无已合并 PR，且：
+  - 本机没有其它任务绑定（存在绑定即拒绝，不覆盖、不排队）；
+  - 仓库内**没有其它 in-flight 任务**：其它 `ghpipe/issue-*` 分支存在、或其它 Issue 处于 `active`/`review`/`changes-requested`/`closing` 阶段、或存在其它打开的任务 PR，都拒绝领取并说明是哪一个；
+  - 违反并行时**不自动清理**别人的任务（不删分支、不改标签），只报告并停止。
+- 并行检测：metadata 投影在发现「同一仓库同时存在多个 in-flight 任务」时输出 `parallel_tasks_detected`（failed）并在 `status` 里作为 blocker；`task next` 仅在没有 in-flight 任务时给出候选，绝不建议并行开第二个任务。
 - 绑定内容仅 `{repository, issue, branch, developer_subject, orchestrator_subject}`，不存阶段与队列；用 `hostfs.Lock` 保证本机互斥，明确声明**不是跨机器分布式锁**。
 - `handoff` 必须提供精确的 `--previous-subject`，且无 pending 写。
 - `release` 只能在 fresh done 或 cancelled 证据下执行（释放前再读一次事实并比对，任何变化都保留绑定）；cancelled 允许无 PR/SHA，但要求 Issue 与全部关联 PR 关闭且未合并、无 pending 写、无未提交文件；释放只删除本机绑定，不切分支、不删代码。
