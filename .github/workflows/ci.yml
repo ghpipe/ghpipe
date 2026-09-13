@@ -2,7 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # Every branch: we merge task branches directly (no pull requests), so a
+    # branch push must run the matrix before the merge, not after.
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
