@@ -2014,6 +2014,8 @@ npm 包装层的 `run.js` 与 `ghpipe update` 是同一套保障的两个入口�
 
 停止条件：任一阶段出现「无法用真实 GitHub 行为证明」的项，停下来把该项移出承诺范围或要求用户提供验证环境，不用本地模拟替代。
 
+**进展（2026-09-13）**：P0 第一批已落地——`go.mod`、命令树与统一 `--json` 信封、退出码契约（0/1/2/3）、`internal/hostfs`（文件锁双实现、原子替换、CRLF 规范化、密钥保护检查）、`internal/project`（配置发现与校验）、`version` 与 `inspect` 两个命令。`go vet ./...` 与 `go test ./...` 通过；`CGO_ENABLED=0` 下 darwin/linux/windows × amd64/arm64 六个目标全部编译通过。
+
 ---
 
 ## 16. 风险
