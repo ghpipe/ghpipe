@@ -738,6 +738,29 @@ ghpipe doctor --for handoff                           # 报告 isolation 与"哪
               "notes": ["同用户进程可读上述文件；本工具不做加密与生物识别（D25）"]}
 ```
 
+#### 6.8 宿主工具必须支持原生子 agent
+
+主会话（Orchestrator）**必须**用宿主工具的**原生子 agent** 派发 Developer 与 Reviewer——即各自拥有独立上下文的独立 agent，而不是主会话在同一上下文里"扮演两个角色"。这是产品承诺（"开发与验收必须是两个独立 agent"）在工程上的实现方式，也是硬性前置条件。
+
+兼容性判定（全部满足才算兼容）：
+
+| # | 能力 | 用途 |
+|---|---|---|
+| C1 | 能创建**独立上下文**的子 agent | 保证 Reviewer 不继承 Developer 的推理路径与先入结论 |
+| C2 | 能把**任务正文与角色边界**传给子 agent | 子 agent 必须拿到 Issue/范围/验收标准/禁止事项 |
+| C3 | 能**等待并收集**子 agent 的结果 | 主会话据此决定派发、返修、合并 |
+| C4 | 子 agent 拥有**独立主体身份**（凭据/密钥/会话与主会话不同） | 对应 CLI 侧的会话与能力隔离 |
+| C5 | 能**限制子 agent 的行为边界**（至少保证 Reviewer 不改代码） | 让"只验收不改动"可执行 |
+
+不兼容时的行为（必须显式，不许静默降级）：
+
+1. `ghpipe doctor --for handoff` 输出 `host_tool: {compatible: false, missing: [C1, ...]}` 并给出结论：**当前开发工具不支持独立子 agent，无法满足"开发与验收独立"**。
+2. 交付类命令（`task claim`、`pr create/edit/review/merge`、`publish`、`release`、`cleanup`）**拒绝执行**并说明原因；只读命令（`status`/`inspect`/`doctor`/`metadata` 只读）仍然可用。
+3. 明确建议**更换开发工具**，而不是让主会话亲自开发或亲自验收——那会破坏本产品最核心的承诺。
+4. 记录一条 `host_tool_incompatible` 到 `execution log`，便于事后核对"这次交付为什么没有独立验收"。
+
+边界说明：这是**宿主能力要求**，CLI 只能检查（主体是否不同、同一主体是否既开发又验收、`doctor` 报告），不能强制宿主真的创建了独立上下文。Skill 必须把这条检查放在交付流程的第一步。
+
 ---
 
 ## 7. GitHub 层
@@ -1307,10 +1330,10 @@ ghpipe verify regression --pr <PR> [--base <SHA>] [--test <name>]
 循环（每一步都以 GitHub 事实为准，本地不存阶段；任何一步中断后都能从 `status` 重新进入）：
 
 1. **定位与领取**：`ghpipe task inspect` 先看本机绑定；`ghpipe status --issue N --role delivery --json` 读事实。无绑定才 `ghpipe task claim --developer-subject <uuid>`，一次只领一个；`ghpipe task next --service` 只读返回候选与排序建议，避免人工逐个翻 Issue。
-2. **派发开发**：把 Issue、精确分支 `ghpipe/issue-N`、Developer 会话与主体密钥路径、验收标准交给 Developer（复用已有的独立上下文；缺上下文就暂停依赖步骤）。
+2. **派发开发**：用宿主工具的**原生子 agent** 派发 Developer（§6.8）——独立上下文、独立主体身份，通过子 agent 指令把 Issue、精确分支 `ghpipe/issue-N`、Developer 会话与主体密钥路径、验收标准与禁止事项交给它。宿主不支持原生子 agent 时按 §6.8 报不兼容并建议更换工具，**不得降级为主会话亲自开发**。
 3. **等待交付**：以 `status` 的 `next_actions` 为唯一权威提示；`pending/pr_missing` = 等待开发交接，不是失败。
 4. **安排验收**：拿到固定 SHA 后，Owner 用 `ghpipe execution issue --work-role reviewer --issue N --auto-bind` 一条命令签发绑定该 PR/SHA 的 Reviewer 会话（自动解析 PR 与 head，不需要人工抄 SHA）。
-5. **验收与返修**：Reviewer 提交绑定 SHA 的 Review；退回则回原 Developer 修复。**新 head 必须重新签发并重新验收，旧批准作废**；返修轮次默认上限 3，超限报告具体阻塞。
+5. **独立验收与返修**：同样用原生子 agent 派发 Reviewer（**另一个**子 agent，不复用 Developer 的上下文），它提交绑定 SHA 的 Review；退回则回原 Developer 修复。**新 head 必须重新签发并重新验收，旧批准作废**；返修轮次默认上限 3，超限报告具体阻塞。
 6. **合并**：当前 SHA 具备独立批准 + 必需检查后，主会话用自身 Orchestrator 身份执行 `ghpipe pr merge <PR> --squash --match-head-commit <SHA> --json`；不使用 admin/auto、不改门禁；回读确认 `merged` 后**永不重复 merge**。
 7. **收尾**：merge 自动触发 `cleanup`；失败用 `ghpipe cleanup --pr <PR>` 恢复（保护脏文件、额外提交、其他 worktree）。随后持续读 `ghpipe status --pr <PR> --role delivery --json`，直到 `closing_main_ci`、`closing_remote_absent`、`closing_local_cleanup`、`closing_metadata`、`closing_issue` 全部消失。
 8. **元数据**：差异交给 Owner/automation（`ghpipe metadata --pr N --apply`），主会话只安排与回读，不自己改标签、不借 Deliver 之外的凭据。
@@ -2003,7 +2026,7 @@ npm 包装层的 `run.js` 与 `ghpipe update` 是同一套保障的两个入口�
 |---|---|---|
 | **测试不得绑定监听端口** | 开发与验收 agent 都跑在沙箱里，`httptest.NewServer`/`net.Listen` 会因 `bind: operation not permitted` 直接 panic；在沙箱外跑通过不代表可用 | HTTP 层测试用注入式假 `RoundTripper`（或 `httptest.NewRecorder` + 直接调用 handler）；CI 与本地默认都不需要网络或端口 |
 | **验证测试必须用 `-count=1`（或等价禁用缓存）** | Go 会缓存测试结果：一次沙箱外的成功会让沙箱内显示 `ok (cached)`，把真实失败掩盖掉 | `quality check --run-tests` 执行 `commands.test` 时，若命令是 go test 一律要求带 `-count=1`；文档与 Skill 的自检清单同样带该参数 |
-| **交接信息写在 Issue/PR 上，不依赖 agent 间消息** | 实践中出现过派发消息未送达子 agent 的情况（子 agent 只拿到环境、没有任务正文） | 任务范围、变更要求、验收标准一律落 GitHub（Issue 正文 + 评论）；派发独立 agent 时在首条指令里要求它先读 Issue 及评论，做到「消息丢了也能从账本恢复」 |
+| **交接信息写在 Issue/PR 上，不依赖 agent 间消息** | 实践中出现过派发消息未送达子 agent 的情况（子 agent 只拿到环境、没有任务正文） | 任务范围、变更要求、验收标准一律落 GitHub（Issue 正文 + 评论），任务正文是对子 agent 的**权威来源**；派发指令里要求子 agent 先读 Issue 及评论，做到「消息丢了也能从账本恢复」。这是对原生子 agent 派发（§6.8）的加固，不是替代 |
 | **平台差异只能由多平台 CI 判定，本地沙箱与交叉编译都不算** | 首次运行三平台矩阵就在 `windows-latest` 抓到一个本地与交叉编译都发现不了的缺陷（`filepath.IsAbs("/tmp")` 在 Windows 上为 false，导致 `commands.*.cwd` 可指向项目外） | `.github/workflows/ci.yml` 的 `test` job 覆盖 ubuntu/macos/windows；分支推送即触发（我们直接合并分支、不开 PR），合并前必须三平台全绿；本地沙箱只作为快速反馈 |
 
 补充一条实践结论（不改变设计，只是记录）：当执行 agent 的沙箱把 `.git` 挂成只读、且无网络时，它只能产出**工作区改动**；此时由调度者在核对产出后代理提交与推送，并在提交信息里注明产出者与代理原因。这与「提交必须由 Developer 完成」的默认约定并不冲突——约定的是**内容责任**，而不是磁盘权限。
@@ -2212,3 +2235,4 @@ npm 包装层的 `run.js` 与 `ghpipe update` 是同一套保障的两个入口�
 | G43 | 测试依赖真实监听端口 | 在 agent 沙箱内 `bind` 被拒绝，测试直接 panic；在沙箱外通过会掩盖问题 | 已定规则：测试不得绑定端口，HTTP 层用注入式假 `RoundTripper`（§14.4） |
 | G44 | 测试缓存掩盖失败 | 一次沙箱外的成功会让沙箱内显示 `ok (cached)`，把真实失败藏起来 | 已定规则：验证测试必须 `-count=1`；`quality check --run-tests` 对 go test 强制该参数（§14.4） |
 | G45 | 依赖 agent 间消息传递任务范围 | 实践中出现派发消息未送达、子 agent 无任务正文的情况 | 已定规则：范围/变更要求/验收标准一律落 Issue 或 PR，派发时要求先读 Issue 及评论（§14.4） |
+| G46 | 没有把"宿主工具必须支持原生子 agent"写成前置条件 | 工具链不支持时可能退化成"主会话亲自开发/亲自验收"，直接破坏产品核心承诺 | 已补 §6.8：五项能力清单（独立上下文、可传任务、可收结果、独立主体、可限边界）+ 不兼容时的行为（`doctor` 报 `host_tool` 不兼容、交付类命令拒绝执行、只读命令保留、建议更换开发工具、记入 `execution log`） |
